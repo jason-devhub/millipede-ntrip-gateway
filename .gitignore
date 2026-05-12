@@ -11,6 +11,7 @@ clients.auth
 host.auth
 source.auth
 secrets/
+.proxy_test_tmp/
 *.pem
 *.key
 *.crt

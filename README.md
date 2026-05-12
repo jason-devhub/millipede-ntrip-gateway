@@ -21,10 +21,20 @@ Une **passerelle d'authentification** Python écoute sur le port **2101** (accè
 - [CI / SBOM / scans (recommandé)](#ci--sbom--scans-recommandé)
 - [Fichiers du dépôt](#fichiers-du-dépôt)
 
+## Tests automatisés (passerelle)
+
+À la racine du dépôt :
+
+```bash
+python3 run_tests.py
+```
+
+Les scénarios couvrent whitelist de chemins, rate-limit, en-têtes de provenance, refus d’exposition en clair, rechargement `SIGHUP`, etc.
+
 ## Prérequis
 
 - Docker 24+ et Docker Compose v2 (plugin `docker compose`).
-- Un terminateur TLS en amont (reverse proxy : HAProxy, Caddy, nginx-stream, Traefik, sidecar Coolify, etc.) si vous exposez la passerelle sur Internet. **Le port 2101 est en clair**, comme NTRIP : sans TLS, les tokens sont sniffables.
+- Le fichier [`docker-compose.yml`](docker-compose.yml) inclut un service **`ntrip-tls`** (nginx *stream*) : le port publié sur l’hôte est en **TLS** ; le conteneur `millipede` n’expose plus le port 2101 sur l’hôte (TCP clair uniquement sur le réseau Docker, entre `ntrip-tls` et la passerelle).
 
 ## Démarrage rapide
 
@@ -38,20 +48,25 @@ chmod 600 secrets/clients.auth
 # 2. Décommentez les blocs `secrets:` du `docker-compose.yml`
 #    (deux blocs : sous le service et au bas du fichier).
 
-# 3. Configurez le mode TLS / clair :
-echo 'NTRIP_ALLOW_PLAINTEXT=0' > .env   # forcer un reverse proxy TLS en amont
-# OU bien (déconseillé en prod) :
-echo 'NTRIP_ALLOW_PLAINTEXT=1' > .env
+# 3. Certificats TLS pour ntrip-tls (chemins attendus : fullchain.pem + privkey.pem)
+mkdir -p certs
+openssl req -x509 -nodes -newkey rsa:4096 -days 365 \
+  -keyout certs/privkey.pem -out certs/fullchain.pem \
+  -subj "/CN=ntrip.votredomaine.example"
 
-# 4. Construisez et démarrez.
+# 4. (optionnel) Port ou dossier des certificats
+# echo 'NTRIP_TLS_PORT=2101' >> .env
+# echo 'NTRIP_TLS_CERT_DIR=./certs' >> .env
+
+# 5. Construisez et démarrez (millipede + ntrip-tls).
 docker compose build
 docker compose up -d
 docker compose logs -f
 ```
 
-La passerelle écoute sur **2101/tcp**. Le caster Millipede n'est joignable que via la passerelle.
+Les clients NTRIP doivent se connecter en **TLS** sur le port publié (par défaut **2101** sur l’hôte, service `ntrip-tls`). Le caster Millipede reste joignable uniquement via la passerelle interne.
 
-> Si `NTRIP_ALLOW_PLAINTEXT` vaut `0` (défaut) et que `NTRIP_AUTH_LISTEN_HOST` est public (typiquement `0.0.0.0`), **la passerelle refuse de démarrer** et journalise `startup_refused`. C'est volontaire (V-02). Levez le flag uniquement quand TLS est terminé en amont OU pour un test LAN explicite.
+> Dans ce *stack*, `millipede` a `NTRIP_ALLOW_PLAINTEXT=1` : le segment **WAN → ntrip-tls** est chiffré ; le segment **ntrip-tls → millipede** est en clair **sur le réseau Docker uniquement** (conforme à l’intention V-02 du rapport). Pour un déploiement sans ce sidecar (ex. TLS géré par Coolify/Traefik seul), adaptez le compose ou exposez `millipede` derrière votre propre terminateur.
 
 ## Configuration des clients (tokens)
 
@@ -83,19 +98,24 @@ L'en-tête `Authorization` est **toujours supprimé** avant relais au caster amo
 
 ## TLS, secrets et déploiement production
 
-### TLS — toujours
+### TLS — compose par défaut
 
-NTRIP sur 2101 est en clair. Sans terminaison TLS en amont, vos tokens transitent en Basic Auth (donc `base64`) lisibles par tout MITM (Wi-Fi public, hop opérateur, etc.). Recommandation :
+Le [`docker-compose.yml`](docker-compose.yml) définit deux services :
 
-- **HAProxy/Caddy/Traefik/nginx-stream** devant 2101 → terminaison TLS → passerelle (réseau Docker interne).
-- Ou **stunnel** côté serveur.
-- Ou un **sidecar Coolify** TLS si vous utilisez Coolify.
+| Service | Rôle |
+|---------|------|
+| `millipede` | Passerelle + caster ; port **2101** seulement sur le réseau Docker (`expose`, pas de publication hôte). |
+| `ntrip-tls` | nginx en mode **stream** : TLS sur le port publié (`NTRIP_TLS_PORT`, défaut 2101), relais TCP vers `millipede:2101`. |
 
-La passerelle **refuse de démarrer en clair** sans `NTRIP_ALLOW_PLAINTEXT=1`. Mettez ce flag à `1` UNIQUEMENT si :
+Fichiers : configuration nginx [`docker/tls/nginx-stream.conf`](docker/tls/nginx-stream.conf), certificats montés depuis `NTRIP_TLS_CERT_DIR` (défaut `./certs`).
 
-1. TLS est terminé en amont (publique chiffrée, passerelle joignable uniquement en interne) ;
-2. OU vous êtes sur un LAN de confiance pour des tests ;
-3. OU vous acceptez explicitement le risque (réseau privé, etc.).
+### TLS — autre hébergeur (Coolify, Traefik, etc.)
+
+Si votre plateforme termine déjà le TLS et pointe vers un port TCP interne, vous pouvez retirer le service `ntrip-tls` du compose et publier uniquement `millipede` (en conservant la politique `NTRIP_ALLOW_PLAINTEXT` adaptée à votre exposition).
+
+### TLS — rappel sécurité
+
+Sans chiffrement jusqu’au client, les tokens (Basic Auth, en-têtes) sont exposés aux intermédiaires réseau. Le *stack* par défaut chiffre au moins le segment jusqu’au serveur via `ntrip-tls`.
 
 ### Secrets
 
@@ -148,7 +168,9 @@ L'entrypoint propage le SIGHUP au proxy Python qui rappelle `reload_tokens()`. L
 | `NTRIP_AUTH_REJECT_DELAY` | `0.5` | Backoff appliqué avant chaque 401 |
 | `NTRIP_AUTH_PATH_REGEX` | *(vide)* | Whitelist regex personnalisée des chemins relayés (V-01) |
 | `NTRIP_AUTH_LOG_IP_ANONYMIZE` | `0` | `1` pour masquer le dernier octet IPv4 / les 64 bits bas IPv6 (V-15) |
-| `NTRIP_ALLOW_PLAINTEXT` | `0` | `1` pour accepter l'exposition en clair (V-02) |
+| `NTRIP_ALLOW_PLAINTEXT` | `0` | `1` si l’écoute est acceptable en clair (TLS en amont, LAN, ou segment Docker uniquement — V-02). Dans le `docker-compose.yml` fourni, **fixé à `1`** sur `millipede` car le TLS public est assuré par `ntrip-tls`. |
+| `NTRIP_TLS_PORT` | `2101` | *(Compose, service `ntrip-tls`)* Port TCP/TLS publié sur l’hôte. |
+| `NTRIP_TLS_CERT_DIR` | `./certs` | *(Compose, service `ntrip-tls`)* Répertoire des fichiers `fullchain.pem` et `privkey.pem`. |
 
 ## Durcissement de l'image et du conteneur
 
@@ -221,7 +243,8 @@ Signez l'image en CD : `cosign sign --key cosign.key <registry>/millipede-ntrip-
 | Fichier | Rôle |
 |---------|------|
 | `Dockerfile` | Build multi-stage (Debian pinné, USER non-root, tini, healthcheck wget) |
-| `docker-compose.yml` | Déploiement durci (read-only, cap_drop, limites, secrets optionnels) |
+| `docker-compose.yml` | `millipede` + `ntrip-tls` (TLS), réseau `ntrip`, secrets optionnels |
+| `docker/tls/nginx-stream.conf` | Terminaison TLS TCP (nginx *stream*) vers `millipede:2101` |
 | `entrypoint.sh` | Démarre caster + proxy ; propage SIGTERM/SIGINT/SIGHUP |
 | `ntrip_auth_proxy.py` | Passerelle d'authentification (rate-limit, whitelist, compare_digest, etc.) |
 | `caster.yaml` | Config Millipede (écoute loopback, `admin_user` désactivé par défaut) |

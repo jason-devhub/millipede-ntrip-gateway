@@ -523,9 +523,21 @@ class _AuthLimiter:
             self._purge(key, now)
             return True, 0.0
 
-    def record_failure(self, key: str) -> Tuple[int, bool]:
+    def record_failure(self, key: str) -> Tuple[str, int, bool]:
+        """Enregistre un échec d'authentification.
+
+        Retourne ``(kind, count, burst_locked)`` où ``kind`` vaut ``"locked"``
+        si l'IP est déjà verrouillée (autre requête concurrente vient de
+        déclencher le verrou — réponse 429), ou ``"counted"`` si l'échec a été
+        pris en compte (réponse 401, sauf si le compteur vient d'atteindre le
+        seuil et active le verrou pour les requêtes suivantes).
+        """
+
         now = time.monotonic()
         with self._lock:
+            locked_until = self._lockouts.get(key)
+            if locked_until is not None and locked_until > now:
+                return "locked", 0, True
             self._purge(key, now)
             window = self._fails[key]
             window.append(now)
@@ -533,8 +545,8 @@ class _AuthLimiter:
             if count >= RL_MAX_FAILS:
                 self._lockouts[key] = now + RL_LOCKOUT
                 self._fails.pop(key, None)
-                return count, True
-            return count, False
+                return "counted", count, True
+            return "counted", count, False
 
     def record_success(self, key: str) -> None:
         with self._lock:
@@ -586,24 +598,19 @@ class NtripAuthHandler(socketserver.BaseRequestHandler):
         status = "accepted"
         upstream: Optional[socket.socket] = None
 
-        # Rate-limit / lockout par IP (V-04). Les connexions en boucle locale
-        # (sondes Docker / Coolify vers /healthz) ne doivent pas hériter d'un
-        # verrouillage causé par des essais d'auth depuis 127.0.0.1.
-        try:
-            skip_rl = ipaddress.ip_address(remote_ip).is_loopback
-        except ValueError:
-            skip_rl = False
-        if not skip_rl:
-            allowed, retry_after = AUTH_LIMITER.check(remote_ip)
-            if not allowed:
-                log_event(
-                    "request_rejected",
-                    reason="rate_limited",
-                    remote_ip=logged_ip,
-                    retry_after=int(retry_after) + 1,
-                )
-                send_too_many_requests(self.request, int(retry_after) + 1)
-                return
+        # Rate-limit / lockout par IP (V-04). S'applique aussi à 127.0.0.1
+        # (les sondes /healthz passent avant l'auth et ne comptent pas comme
+        # échecs — elles ne satureront pas le budget).
+        allowed, retry_after = AUTH_LIMITER.check(remote_ip)
+        if not allowed:
+            log_event(
+                "request_rejected",
+                reason="rate_limited",
+                remote_ip=logged_ip,
+                retry_after=int(retry_after) + 1,
+            )
+            send_too_many_requests(self.request, int(retry_after) + 1)
+            return
 
         deadline = time.monotonic() + HEADER_DEADLINE
         first_request = recv_headers(self.request, deadline)
@@ -637,8 +644,20 @@ class NtripAuthHandler(socketserver.BaseRequestHandler):
         # Authentification.
         client_id, auth_method = authenticate(headers)
         if not client_id:
+            kind, count, locked = AUTH_LIMITER.record_failure(remote_ip)
+            if kind == "locked":
+                log_event(
+                    "request_rejected",
+                    method=method,
+                    path=path,
+                    reason="rate_limited",
+                    remote_ip=logged_ip,
+                    remote_port=remote_port,
+                    user_agent=headers.get("user-agent", ""),
+                )
+                send_too_many_requests(self.request, int(RL_LOCKOUT) + 1)
+                return
             status = "rejected"
-            count, locked = AUTH_LIMITER.record_failure(remote_ip)
             log_event(
                 "request_rejected",
                 method=method,
