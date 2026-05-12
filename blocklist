@@ -1,0 +1,3 @@
+# Par défaut : pas de blocage (quota illimité pour tout le monde)
+0.0.0.0/0 -1
+::/0 -1

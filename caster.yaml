@@ -1,0 +1,31 @@
+#
+# Millipede en proxy NTRIP vers le caster Centipede
+# (Millipede 0.8.x — configuration YAML)
+#
+
+listen:
+  - port: 2102
+    ip: 127.0.0.1
+
+trusted_http_proxy:
+  - 127.0.0.1/32
+
+proxy:
+  - table_refresh_delay: 600
+    host: caster.centipede.fr
+    port: 2101
+
+host_auth_file: host.auth
+source_auth_file: source.auth
+sourcetable_file: sourcetable.dat
+blocklist_file: blocklist
+
+# Logs vers la sortie standard (docker logs / collecteur)
+access_log: /dev/stdout
+log: /dev/stdout
+log_level: INFO
+
+hysteresis_m: 500.0
+backlog_socket: 114688
+backlog_evbuffer: 16384
+admin_user: admin

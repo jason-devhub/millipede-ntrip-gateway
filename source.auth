@@ -1,0 +1,7 @@
+#
+# Authentification des sources locales (mountpoints poussés vers ce caster).
+# En proxy pur, souvent vide ou commenté uniquement.
+#
+# Exemple :
+# MON_MP:user:secret
+#

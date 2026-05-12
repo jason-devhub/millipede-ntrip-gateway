@@ -1,0 +1,10 @@
+services:
+  millipede:
+    build: .
+    container_name: millipede
+    restart: unless-stopped
+    environment:
+      # Format: client_id:token,client_id2:token2
+      NTRIP_AUTH_TOKENS: ${NTRIP_AUTH_TOKENS:-}
+    ports:
+      - "2101:2101"

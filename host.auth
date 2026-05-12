@@ -1,0 +1,5 @@
+#
+# Identifiants pour se connecter à des casters distants (mode proxy).
+# Décommentez et adaptez si caster.centipede.fr exige une authentification :
+# caster.centipede.fr:utilisateur:motdepasse
+#
