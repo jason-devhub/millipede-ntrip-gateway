@@ -3,3 +3,4 @@
 # Décommentez et adaptez si caster.centipede.fr exige une authentification :
 # caster.centipede.fr:utilisateur:motdepasse
 #
+# Ne commettez JAMAIS ce fichier rempli. Le `.gitignore` exclut `host.auth`.

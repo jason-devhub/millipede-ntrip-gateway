@@ -1,0 +1,17 @@
+# Clients autorisés par la passerelle NTRIP (exemple).
+#
+# Copiez ce fichier en `clients.auth` (jamais commité) ou montez-le en
+# Docker secret sur /run/secrets/clients_auth (voir docker-compose.yml).
+#
+# Format : un client par ligne
+#   client_id:token
+#
+# Recommandations :
+# - tokens >= 32 octets aléatoires (ex: `openssl rand -base64 48`),
+# - jamais commettre ce fichier rempli dans Git,
+# - chaque client doit avoir un token DIFFÉRENT (la passerelle refuse de
+#   démarrer en mode strict si deux client_id partagent un même token).
+#
+# Exemple :
+# rover-chantier-01:K7gH3mN9pQ2vX5zR8wT1yU4sA6dF0jLpQ9wXcVbNmKjHgFdSaQwErTyU
+# tablette-002:Z9xC8vB7nM6qW5eR4tY3uI2oP1aS0dFgHjKlPoIuYtReWqAsDfGhJkLmNbVc

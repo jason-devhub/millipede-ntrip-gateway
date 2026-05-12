@@ -5,3 +5,4 @@
 # Exemple :
 # MON_MP:user:secret
 #
+# Ne commettez JAMAIS ce fichier rempli. Le `.gitignore` exclut `source.auth`.

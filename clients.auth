@@ -1,7 +1,0 @@
-# Clients autorises par la passerelle NTRIP.
-#
-# Format:
-# client_id:token
-#
-# Exemple:
-# rover-001:change-me-long-random-token

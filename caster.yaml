@@ -2,6 +2,10 @@
 # Millipede en proxy NTRIP vers le caster Centipede
 # (Millipede 0.8.x — configuration YAML)
 #
+# Le binaire `caster` n'écoute QUE sur la boucle locale : tout trafic public
+# transite par la passerelle Python qui authentifie d'abord puis relaie. La
+# passerelle bloque explicitement les chemins d'administration (V-01).
+#
 
 listen:
   - port: 2102
@@ -28,4 +32,12 @@ log_level: INFO
 hysteresis_m: 500.0
 backlog_socket: 114688
 backlog_evbuffer: 16384
-admin_user: admin
+
+# V-20 : la directive `admin_user` exposait l'API d'administration de
+# Millipede. La passerelle Python bloque déjà tous les chemins d'admin
+# (whitelist côté `ntrip_auth_proxy.py`), mais on retire en plus la
+# configuration explicite côté caster pour défense en profondeur.
+# Si vous activez l'API admin, documentez explicitement le couple
+# utilisateur/mot de passe et n'ouvrez l'accès que via socket Unix
+# ou réseau interne — JAMAIS depuis le port public 2101.
+# admin_user: admin

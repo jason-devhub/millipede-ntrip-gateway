@@ -1,18 +1,110 @@
+# Déploiement Millipede + passerelle NTRIP — durcissement Compose.
+#
+# Sécurité (cf. _security_report.md) :
+# - V-03 : user non-root, capabilities purgées, FS root en lecture seule,
+#          `no-new-privileges`.
+# - V-05 / V-13 : limites de threads (ulimits) et de ressources (cpu/mem/pids).
+# - V-09 : `clients.auth` peut être monté comme Docker secret (cf. bloc plus
+#          bas commenté). À défaut, on retombe sur la variable d'environnement
+#          `NTRIP_AUTH_TOKENS` (déconseillé en production).
+# - V-02 : exposition en clair refusée par la passerelle sauf
+#          `NTRIP_ALLOW_PLAINTEXT=1` (à définir explicitement en l'absence de
+#          reverse proxy TLS).
+
 services:
   millipede:
-    build: .
+    build:
+      context: .
+      args:
+        # Pin du tag Debian et du commit Millipede : à mettre à jour
+        # explicitement après revue (cf. Dockerfile).
+        DEBIAN_TAG: bookworm-20260505-slim
+        MILLIPEDE_COMMIT: 3c8b64cfdc776a253794172e93ea3cc1b9ca4509
+    image: millipede-ntrip-gateway:local
     container_name: millipede
     restart: unless-stopped
+
+    # Toujours exécuter en non-root (V-03). L'UID/GID est créé dans le Dockerfile.
+    user: "10001:10001"
+
+    # Pas d'élévation de privilèges, pas de capabilities, FS root en lecture seule.
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    read_only: true
+    # /tmp pour caches Python et fichiers volatils. Pas exécutable, pas suid.
+    tmpfs:
+      - /tmp:rw,size=16m,mode=1777,nosuid,nodev,noexec
+
+    # Limites système (V-05).
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096
+
+    # Limites de ressources (V-13). En swarm, `deploy.resources` ; hors swarm
+    # `mem_limit`, `pids_limit`, `cpus`. On définit les deux pour portabilité.
+    mem_limit: 512m
+    mem_reservation: 128m
+    pids_limit: 256
+    cpus: 1.5
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 512M
+          pids: 256
+
     environment:
-      # Format: client_id:token,client_id2:token2
+      # Hygiene Python : pas de .pyc sur le FS read-only.
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+
+      # Liste « clé:valeur » pour injection rapide. À NE PAS utiliser en
+      # production : les variables d'env apparaissent dans `docker inspect`
+      # (V-09). Préférez la section `secrets` ci-dessous.
       NTRIP_AUTH_TOKENS: ${NTRIP_AUTH_TOKENS:-}
+
+      # Refus de démarrer en clair sauf consentement explicite (V-02).
+      # Mettez à "1" UNIQUEMENT si vous savez que TLS est terminé en amont
+      # (reverse proxy, sidecar Coolify, stunnel) ou que vous acceptez le
+      # risque pour des essais en LAN.
+      NTRIP_ALLOW_PLAINTEXT: ${NTRIP_ALLOW_PLAINTEXT:-0}
+
+      # Anonymisation IP dans les logs (RGPD, V-15) ; mettez à "1" pour activer.
+      NTRIP_AUTH_LOG_IP_ANONYMIZE: ${NTRIP_AUTH_LOG_IP_ANONYMIZE:-0}
+
+      # Plafonds de défense (V-04, V-05). Surchargeables.
+      NTRIP_AUTH_MAX_CONNECTIONS: ${NTRIP_AUTH_MAX_CONNECTIONS:-200}
+      NTRIP_AUTH_RL_MAX_FAILS: ${NTRIP_AUTH_RL_MAX_FAILS:-10}
+      NTRIP_AUTH_RL_LOCKOUT: ${NTRIP_AUTH_RL_LOCKOUT:-300}
+      NTRIP_AUTH_HEADER_DEADLINE: ${NTRIP_AUTH_HEADER_DEADLINE:-5}
+
+    # Pour utiliser un fichier `clients.auth` en Docker secret, créez
+    # `./secrets/clients.auth` puis dé-commentez les deux blocs ci-dessous
+    # ET la section `secrets:` au bas de ce fichier. L'entrypoint détecte
+    # automatiquement `/run/secrets/clients_auth` et y branche la passerelle.
+    # secrets:
+    #   - source: clients_auth
+    #     target: clients_auth
+    #     mode: 0400
+    #     uid: "10001"
+    #     gid: "10001"
+
+    # Sondes Docker / Coolify / Traefik : HTTP 200 sur /healthz (cf. README).
+    # Forme CMD (sans grep) pour un code de sortie wget fiable.
     healthcheck:
       test:
         [
           "CMD",
-          "python3",
-          "-c",
-          "import socket as S;s=S.create_connection(('127.0.0.1',2101),5);s.sendall(b'GET /healthz HTTP/1.0\r\nHost:127.0.0.1\r\n\r\n');d=s.recv(256);s.close();exit(0 if b'200' in d and b'OK' in d else 1)",
+          "wget",
+          "-q",
+          "--tries=1",
+          "--timeout=3",
+          "-O",
+          "/dev/null",
+          "http://127.0.0.1:2101/healthz",
         ]
       interval: 30s
       timeout: 5s
@@ -20,3 +112,7 @@ services:
       start_period: 45s
     ports:
       - "2101:2101"
+
+# secrets:
+#   clients_auth:
+#     file: ./secrets/clients.auth

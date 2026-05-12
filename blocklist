@@ -1,3 +1,14 @@
-# Par défaut : pas de blocage (quota illimité pour tout le monde)
-0.0.0.0/0 -1
-::/0 -1
+# Quotas Millipede par préfixe IP (V-11).
+#
+# Le format Millipede : <prefix> <max_connections_simultanees>
+#   -1 = illimité (déconseillé)
+#    0 = bloqué
+#   N  = N sessions simultanées maximum
+#
+# Politique par défaut : 50 sessions simultanées par préfixe global.
+# La passerelle d'authentification ajoute de son côté un rate-limit anti
+# brute-force (V-04) et une limite globale de connexions (V-05).
+# Ajoutez des entrées plus spécifiques (sous-réseau de confiance) avant
+# ces deux lignes catch-all si besoin de quotas plus généreux.
+0.0.0.0/0 50
+::/0 50

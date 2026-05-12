@@ -1,4 +1,16 @@
 __pycache__/
 *.py[cod]
 .env
+.env.*
+!.env.example
 *.log
+
+# Secrets — NE JAMAIS commettre les fichiers de tokens / mots de passe.
+# Seuls les fichiers `*.example` (sans valeur réelle) sont autorisés.
+clients.auth
+host.auth
+source.auth
+secrets/
+*.pem
+*.key
+*.crt
