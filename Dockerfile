@@ -44,4 +44,8 @@ RUN chmod +x /entrypoint.sh
 
 EXPOSE 2101
 
+# Coolify et Docker utilisent cette sonde (GET /healthz sur la passerelle, sans token).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
+    CMD python3 -c "import socket as S;s=S.create_connection(('127.0.0.1',2101),5);s.sendall(b'GET /healthz HTTP/1.0\\r\\nHost:127.0.0.1\\r\\n\\r\\n');d=s.recv(256);s.close();exit(0 if b'200' in d and b'OK' in d else 1)"
+
 ENTRYPOINT ["/entrypoint.sh"]

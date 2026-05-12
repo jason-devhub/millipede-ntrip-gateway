@@ -21,6 +21,12 @@ docker compose up -d
 
 Le service NTRIP est exposé sur **2101/tcp** (hôte → conteneur).
 
+### Healthcheck (Docker / Coolify)
+
+- L’image définit une directive **`HEALTHCHECK`** Docker : requête **`GET /healthz`** sur `127.0.0.1:2101` (passerelle uniquement, **sans** token). Réponse attendue : `HTTP/1.1 200 OK` et corps `ok`.
+- **Coolify** s’appuie en général sur le healthcheck Docker de l’image : aucune URL HTTP publique n’est obligatoire si le service est publié en TCP brut. Si l’interface propose une sonde HTTP, pointez vers **`/healthz`** sur le port exposé (même chemin que la passerelle).
+- Avec **Docker Compose**, un bloc `healthcheck` équivalent est déjà défini dans [`docker-compose.yml`](docker-compose.yml).
+
 ### Variables d’environnement (Compose)
 
 Dans [`docker-compose.yml`](docker-compose.yml), la variable **`NTRIP_AUTH_TOKENS`** peut être renseignée pour injecter des clients sans modifier l’image :

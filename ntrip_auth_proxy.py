@@ -165,6 +165,28 @@ def send_unauthorized(conn: socket.socket) -> None:
     conn.sendall(response)
 
 
+def send_health_ok(conn: socket.socket, method: str) -> None:
+    """Réponse 200 pour probes Docker / Coolify (sans auth, sans toucher à Millipede)."""
+    body = b"ok\n"
+    if method.upper() == "HEAD":
+        response = (
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: text/plain\r\n"
+            b"Connection: close\r\n"
+            b"Content-Length: " + str(len(body)).encode("ascii") + b"\r\n"
+            b"\r\n"
+        )
+    else:
+        response = (
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: text/plain\r\n"
+            b"Connection: close\r\n"
+            b"Content-Length: " + str(len(body)).encode("ascii") + b"\r\n"
+            b"\r\n" + body
+        )
+    conn.sendall(response)
+
+
 class NtripAuthHandler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
         start = time.monotonic()
@@ -183,6 +205,11 @@ class NtripAuthHandler(socketserver.BaseRequestHandler):
             return
 
         method, path, version, headers = parse_headers(first_request)
+        req_path = path.split("?", 1)[0]
+        if method.upper() in ("GET", "HEAD") and req_path == "/healthz":
+            send_health_ok(self.request, method)
+            return
+
         client_id, auth_method = authenticate(headers)
         if not client_id:
             status = "rejected"
