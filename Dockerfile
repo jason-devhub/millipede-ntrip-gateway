@@ -45,15 +45,18 @@ RUN make clean all \
 
 FROM debian:${DEBIAN_TAG}
 
+# Paquets runtime : noms **bookworm** (deb12). Sur trixie/stable récente les
+# binaires portent souvent le suffixe « t64 » (ex. libssl3t64) ; si vous
+# changez DEBIAN_TAG vers trixie, alignez ces noms (cf. packages.debian.org).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         libcyaml1 \
-        libevent-core-2.1-7t64 \
-        libevent-extra-2.1-7t64 \
-        libevent-openssl-2.1-7t64 \
-        libevent-pthreads-2.1-7t64 \
+        libevent-core-2.1-7 \
+        libevent-extra-2.1-7 \
+        libevent-openssl-2.1-7 \
+        libevent-pthreads-2.1-7 \
         libjson-c5 \
-        libssl3t64 \
+        libssl3 \
         python3 \
         tini \
         wget \
