@@ -1,24 +1,24 @@
-# Déploiement Millipede + passerelle NTRIP + terminaison TLS (TCP).
+# Déploiement Millipede — passerelle NTRIP avec terminaison TLS via Traefik.
 #
 # Architecture :
-#   - `millipede` : passerelle NTRIP en clair sur le port 2101 **uniquement**
-#     sur le réseau Docker (non publié sur l’hôte). `NTRIP_ALLOW_PLAINTEXT=1`
-#     est volontaire ici : le trafic Internet arrive chiffré jusqu’à
-#     `ntrip-tls`, pas jusqu’au rover en clair sur le WAN (V-02).
-#   - `ntrip-tls` : nginx (module stream) écoute en **TLS** sur le port publié
-#     et relaie en TCP vers `millipede:2101`.
+#   Internet ──TLS TCP──▶ Traefik (Coolify, port NTRIP_TLS_PORT)
+#                              ──TCP clair──▶ millipede:2101 (réseau Docker)
 #
-# Certificats : placez `fullchain.pem` et `privkey.pem` dans le répertoire
-# défini par `NTRIP_TLS_CERT_DIR` (défaut `./certs`). Exemple auto-signé :
-#   mkdir -p certs && openssl req -x509 -nodes -newkey rsa:4096 -days 365 \
-#     -keyout certs/privkey.pem -out certs/fullchain.pem \
-#     -subj "/CN=ntrip.example.org"
+# Traefik gère les certificats Let's Encrypt automatiquement (renouvellement
+# inclus). Plus besoin de service ntrip-tls ni de certificats manuels.
 #
-# Variables utiles : `NTRIP_TLS_PORT` (port hôte TLS, défaut 2101),
-# `NTRIP_TLS_CERT_DIR` (dossier des PEM montés dans le conteneur TLS).
+# Prérequis (une seule fois dans Coolify) :
+#   Server → Proxy → ajouter l'entrypoint TCP "ntrip" sur le port NTRIP_TLS_PORT
+#   (défaut 2101) dans la configuration statique de Traefik.
+#
+# Variables :
+#   NTRIP_DOMAIN      — nom de domaine exposé (ex. ntrip.example.org) [obligatoire]
+#   NTRIP_TLS_PORT    — port hôte TCP/TLS (défaut 2101)
 
 networks:
   ntrip:
+  coolify:
+    external: true   # réseau Traefik géré par Coolify
 
 services:
   millipede:
@@ -54,14 +54,22 @@ services:
           pids: 256
     networks:
       - ntrip
-    # Pas de publication sur l’hôte : seul ntrip-tls expose le port TLS.
+      - coolify   # Traefik doit pouvoir joindre le conteneur
     expose:
       - "2101"
+    labels:
+      - "traefik.enable=true"
+      # Routeur TCP avec terminaison TLS (SNI = NTRIP_DOMAIN)
+      - "traefik.tcp.routers.ntrip.rule=HostSNI(`${NTRIP_DOMAIN}`)"
+      - "traefik.tcp.routers.ntrip.entrypoints=ntrip"
+      - "traefik.tcp.routers.ntrip.tls=true"
+      - "traefik.tcp.routers.ntrip.tls.certresolver=letsencrypt"
+      - "traefik.tcp.services.ntrip.loadbalancer.server.port=2101"
     environment:
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
       NTRIP_AUTH_TOKENS: ${NTRIP_AUTH_TOKENS:-}
-      # Trafic clair limité au réseau Docker vers ntrip-tls (TLS côté client).
+      # Traefik termine TLS ; millipede reçoit du TCP brut depuis le réseau Docker.
       NTRIP_ALLOW_PLAINTEXT: "1"
       NTRIP_AUTH_LOG_IP_ANONYMIZE: ${NTRIP_AUTH_LOG_IP_ANONYMIZE:-0}
       NTRIP_AUTH_MAX_CONNECTIONS: ${NTRIP_AUTH_MAX_CONNECTIONS:-200}
@@ -90,31 +98,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 45s
-
-  ntrip-tls:
-    # Image locale : la config est copiée au build (évite un bind-mount fichier
-    # vers /etc/nginx/nginx.conf, fragile sur Coolify si le chemin hôte manque).
-    build:
-      context: ./docker/tls
-    image: millipede-ntrip-tls:local
-    container_name: ntrip-tls
-    restart: unless-stopped
-    depends_on:
-      millipede:
-        condition: service_healthy
-    networks:
-      - ntrip
-    ports:
-      - "${NTRIP_TLS_PORT:-2101}:2101"
-    volumes:
-      - ${NTRIP_TLS_CERT_DIR:-./certs}:/etc/nginx/certs:ro
-    healthcheck:
-      # Vérifie que la config stream + certificats se chargent (TLS opérationnel).
-      test: ["CMD", "nginx", "-t"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
 
 # secrets:
 #   clients_auth:
