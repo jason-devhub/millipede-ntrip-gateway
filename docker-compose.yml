@@ -92,7 +92,11 @@ services:
       start_period: 45s
 
   ntrip-tls:
-    image: nginx:1.27-alpine
+    # Image locale : la config est copiée au build (évite un bind-mount fichier
+    # vers /etc/nginx/nginx.conf, fragile sur Coolify si le chemin hôte manque).
+    build:
+      context: ./docker/tls
+    image: millipede-ntrip-tls:local
     container_name: ntrip-tls
     restart: unless-stopped
     depends_on:
@@ -103,7 +107,6 @@ services:
     ports:
       - "${NTRIP_TLS_PORT:-2101}:2101"
     volumes:
-      - ./docker/tls/nginx-stream.conf:/etc/nginx/nginx.conf:ro
       - ${NTRIP_TLS_CERT_DIR:-./certs}:/etc/nginx/certs:ro
     healthcheck:
       # Vérifie que la config stream + certificats se chargent (TLS opérationnel).
