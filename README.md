@@ -10,9 +10,10 @@ Une **passerelle d'authentification** Python écoute sur le port **2101** (accè
 ## Sommaire
 
 - [Prérequis](#prérequis)
-- [Démarrage rapide](#démarrage-rapide)
+- [Architecture](#architecture)
+- [Déploiement sur Coolify (recommandé)](#déploiement-sur-coolify-recommandé)
+- [Démarrage rapide (Docker Compose local)](#démarrage-rapide-docker-compose-local)
 - [Configuration des clients (tokens)](#configuration-des-clients-tokens)
-- [TLS, secrets et déploiement production](#tls-secrets-et-déploiement-production)
 - [Variables d'environnement](#variables-denvironnement)
 - [Durcissement de l'image et du conteneur](#durcissement-de-limage-et-du-conteneur)
 - [Rechargement à chaud des tokens](#rechargement-à-chaud-des-tokens)
@@ -29,44 +30,101 @@ Une **passerelle d'authentification** Python écoute sur le port **2101** (accè
 python3 run_tests.py
 ```
 
-Les scénarios couvrent whitelist de chemins, rate-limit, en-têtes de provenance, refus d’exposition en clair, rechargement `SIGHUP`, etc.
+Les scénarios couvrent whitelist de chemins, rate-limit, en-têtes de provenance, refus d'exposition en clair, rechargement `SIGHUP`, etc.
 
 ## Prérequis
 
 - Docker 24+ et Docker Compose v2 (plugin `docker compose`).
-- Le fichier [`docker-compose.yml`](docker-compose.yml) inclut un service **`ntrip-tls`** (nginx *stream*) : le port publié sur l’hôte est en **TLS** ; le conteneur `millipede` n’expose plus le port 2101 sur l’hôte (TCP clair uniquement sur le réseau Docker, entre `ntrip-tls` et la passerelle).
+- En production sur Coolify : Traefik (proxy intégré de Coolify) avec un entrypoint TCP sur le port NTRIP (voir [Déploiement sur Coolify](#déploiement-sur-coolify-recommandé)).
 
-## Démarrage rapide
+## Architecture
+
+```
+Client NTRIP  ──TLS TCP──▶  Traefik (Coolify, port 2101)
+                                   ──TCP clair──▶  millipede:2101 (réseau Docker interne)
+                                                        │
+                                                  authentification
+                                                  rate-limit, whitelist
+                                                        │
+                                                        ▼
+                                              caster Millipede (127.0.0.1:2102)
+```
+
+Traefik assure la **terminaison TLS** et le renouvellement automatique des certificats Let's Encrypt. Le contrôle d'accès (tokens, rate-limit, etc.) reste entièrement dans `millipede`. Le segment `Traefik → millipede` est en clair **sur le réseau Docker interne uniquement** (conforme à l'intention V-02 du rapport).
+
+## Déploiement sur Coolify (recommandé)
+
+### 1. Ajouter l'entrypoint TCP à Traefik (une seule fois par serveur)
+
+Coolify gère Traefik automatiquement pour HTTP/HTTPS. Pour exposer un port TCP personnalisé, il faut déclarer un entrypoint supplémentaire.
+
+**Coolify → votre Serveur → Proxy**
+
+Dans la section des **ports exposés** (ou "Additional Ports"), ajoutez :
+
+```
+2101:2101/tcp
+```
+
+Coolify injecte cet entrypoint dans la configuration statique de Traefik et redémarre le proxy. Cette opération est **unique** : elle n'est pas à refaire lors des redéploiements de l'application.
+
+> Si votre Coolify affiche un éditeur de configuration Traefik directe, ajoutez dans la config statique :
+> ```yaml
+> entryPoints:
+>   ntrip:
+>     address: ":2101"
+> ```
+
+### 2. Configurer l'application dans Coolify
+
+Dans **Application → Environment Variables**, définissez :
+
+| Variable | Exemple | Obligatoire |
+|----------|---------|-------------|
+| `NTRIP_DOMAIN` | `ntrip.exemple.fr` | Oui |
+| `NTRIP_AUTH_TOKENS` | `rover-001:token,...` | Oui (ou via secret) |
+| `NTRIP_AUTH_MAX_CONNECTIONS` | `200` | Non (défaut) |
+
+### 3. Pointer le DNS
+
+Enregistrement A : `ntrip.exemple.fr` → IP du serveur Coolify.
+
+### 4. Déployer
+
+Lancez un déploiement depuis Coolify. Traefik :
+- détecte les labels `traefik.tcp.*` dans le `docker-compose.yml` ;
+- obtient automatiquement le certificat Let's Encrypt via le challenge HTTP-01 (port 80) ;
+- expose le service NTRIP en TLS sur le port 2101.
+
+### Note sur la compatibilité clients
+
+Le routage TCP Traefik utilise le **SNI** (Server Name Indication) pour identifier le domaine. Les clients NTRIP qui supportent TLS envoient le SNI dans la poignée de main TLS. Si vous avez des clients anciens sans SNI, ouvrez une issue pour ajouter un fallback `HostSNI(*)`.
+
+---
+
+## Démarrage rapide (Docker Compose local)
+
+Pour un test local sans Coolify, sans TLS (à ne jamais exposer sur Internet tel quel) :
 
 ```bash
-# 1. (production) Préparez vos tokens en Docker secret.
-mkdir -p secrets
-chmod 700 secrets
-printf 'rover-001:%s\n' "$(openssl rand -base64 48 | tr -d '/+=' | head -c 48)" > secrets/clients.auth
-chmod 600 secrets/clients.auth
+# 1. Définissez vos tokens
+export NTRIP_AUTH_TOKENS="rover-001:$(openssl rand -base64 36 | tr -d '/+=')"
+export NTRIP_ALLOW_PLAINTEXT=1   # uniquement en local / LAN
+export NTRIP_DOMAIN=localhost
 
-# 2. Décommentez les blocs `secrets:` du `docker-compose.yml`
-#    (deux blocs : sous le service et au bas du fichier).
-
-# 3. Certificats TLS pour ntrip-tls (chemins attendus : fullchain.pem + privkey.pem)
-mkdir -p certs
-openssl req -x509 -nodes -newkey rsa:4096 -days 365 \
-  -keyout certs/privkey.pem -out certs/fullchain.pem \
-  -subj "/CN=ntrip.votredomaine.example"
-
-# 4. (optionnel) Port ou dossier des certificats
-# echo 'NTRIP_TLS_PORT=2101' >> .env
-# echo 'NTRIP_TLS_CERT_DIR=./certs' >> .env
-
-# 5. Construisez et démarrez (millipede + ntrip-tls).
+# 2. Construisez et démarrez
 docker compose build
 docker compose up -d
 docker compose logs -f
 ```
 
-Les clients NTRIP doivent se connecter en **TLS** sur le port publié (par défaut **2101** sur l’hôte, service `ntrip-tls`). Le caster Millipede reste joignable uniquement via la passerelle interne.
+Les clients NTRIP se connectent sur `localhost:2101` (TCP clair, local uniquement).
 
-> Dans ce *stack*, `millipede` a `NTRIP_ALLOW_PLAINTEXT=1` : le segment **WAN → ntrip-tls** est chiffré ; le segment **ntrip-tls → millipede** est en clair **sur le réseau Docker uniquement** (conforme à l’intention V-02 du rapport). Pour un déploiement sans ce sidecar (ex. TLS géré par Coolify/Traefik seul), adaptez le compose ou exposez `millipede` derrière votre propre terminateur.
+> Pour un vrai déploiement local avec TLS, utilisez `docker/tls/` (nginx stream) :
+> générez des certificats avec `openssl req -x509 ...`, montez-les dans un service nginx,
+> et adaptez le compose en conséquence.
+
+---
 
 ## Configuration des clients (tokens)
 
@@ -96,26 +154,15 @@ La passerelle accepte trois modes, tous en comparaison à temps constant (V-06 /
 
 L'en-tête `Authorization` est **toujours supprimé** avant relais au caster amont : le binaire Millipede ne voit jamais le secret.
 
-## TLS, secrets et déploiement production
+## TLS et secrets
 
-### TLS — compose par défaut
+### TLS sur Coolify
 
-Le [`docker-compose.yml`](docker-compose.yml) définit deux services :
+La terminaison TLS est assurée par Traefik (proxy Coolify) via les labels `traefik.tcp.*` du `docker-compose.yml`. Les certificats Let's Encrypt sont gérés automatiquement par Coolify. Aucun fichier de certificat à maintenir.
 
-| Service | Rôle |
-|---------|------|
-| `millipede` | Passerelle + caster ; port **2101** seulement sur le réseau Docker (`expose`, pas de publication hôte). |
-| `ntrip-tls` | nginx en mode **stream** : TLS sur le port publié (`NTRIP_TLS_PORT`, défaut 2101), relais TCP vers `millipede:2101`. |
+### TLS en dehors de Coolify
 
-Fichiers : configuration nginx [`docker/tls/nginx-stream.conf`](docker/tls/nginx-stream.conf), certificats montés depuis `NTRIP_TLS_CERT_DIR` (défaut `./certs`).
-
-### TLS — autre hébergeur (Coolify, Traefik, etc.)
-
-Si votre plateforme termine déjà le TLS et pointe vers un port TCP interne, vous pouvez retirer le service `ntrip-tls` du compose et publier uniquement `millipede` (en conservant la politique `NTRIP_ALLOW_PLAINTEXT` adaptée à votre exposition).
-
-### TLS — rappel sécurité
-
-Sans chiffrement jusqu’au client, les tokens (Basic Auth, en-têtes) sont exposés aux intermédiaires réseau. Le *stack* par défaut chiffre au moins le segment jusqu’au serveur via `ntrip-tls`.
+Le répertoire `docker/tls/` contient un `Dockerfile` et une configuration nginx (`nginx-stream.conf`) pour monter un service de terminaison TLS TCP indépendant. À adapter selon votre infrastructure si vous n'utilisez pas Coolify/Traefik.
 
 ### Secrets
 
@@ -138,7 +185,7 @@ secrets:
 
 Avec Coolify / Swarm / Kubernetes, utilisez plutôt le secret manager natif (Vault, SOPS, Kubernetes Secrets, etc.) et montez-le sur `/run/secrets/clients_auth`.
 
-### Rotation
+### Rotation des tokens
 
 Mettez à jour le fichier monté puis envoyez `SIGHUP` au conteneur :
 
@@ -152,6 +199,7 @@ L'entrypoint propage le SIGHUP au proxy Python qui rappelle `reload_tokens()`. L
 
 | Variable | Défaut | Rôle |
 |----------|--------|------|
+| `NTRIP_DOMAIN` | *(vide)* | Nom de domaine exposé — utilisé par Traefik pour le routage TCP TLS et le certificat Let's Encrypt. **Obligatoire sur Coolify.** |
 | `NTRIP_AUTH_LISTEN_HOST` | `0.0.0.0` | Adresse d'écoute de la passerelle |
 | `NTRIP_AUTH_LISTEN_PORT` | `2101` | Port d'écoute |
 | `NTRIP_UPSTREAM_HOST` | `127.0.0.1` | Hôte Millipede (interne au conteneur) |
@@ -168,9 +216,7 @@ L'entrypoint propage le SIGHUP au proxy Python qui rappelle `reload_tokens()`. L
 | `NTRIP_AUTH_REJECT_DELAY` | `0.5` | Backoff appliqué avant chaque 401 |
 | `NTRIP_AUTH_PATH_REGEX` | *(vide)* | Whitelist regex personnalisée des chemins relayés (V-01) |
 | `NTRIP_AUTH_LOG_IP_ANONYMIZE` | `0` | `1` pour masquer le dernier octet IPv4 / les 64 bits bas IPv6 (V-15) |
-| `NTRIP_ALLOW_PLAINTEXT` | `0` | `1` si l’écoute est acceptable en clair (TLS en amont, LAN, ou segment Docker uniquement — V-02). Dans le `docker-compose.yml` fourni, **fixé à `1`** sur `millipede` car le TLS public est assuré par `ntrip-tls`. |
-| `NTRIP_TLS_PORT` | `2101` | *(Compose, service `ntrip-tls`)* Port TCP/TLS publié sur l’hôte. |
-| `NTRIP_TLS_CERT_DIR` | `./certs` | *(Compose, service `ntrip-tls`)* Répertoire des fichiers `fullchain.pem` et `privkey.pem`. |
+| `NTRIP_ALLOW_PLAINTEXT` | `0` | `1` si l'écoute en clair est acceptable (TLS en amont assuré par Traefik — V-02). Fixé à `1` dans le `docker-compose.yml` fourni car Traefik termine TLS avant de transmettre à `millipede`. |
 
 ## Durcissement de l'image et du conteneur
 
@@ -243,8 +289,8 @@ Signez l'image en CD : `cosign sign --key cosign.key <registry>/millipede-ntrip-
 | Fichier | Rôle |
 |---------|------|
 | `Dockerfile` | Build multi-stage (Debian pinné, USER non-root, tini, healthcheck wget) |
-| `docker-compose.yml` | `millipede` + `ntrip-tls` (TLS), réseau `ntrip`, secrets optionnels |
-| `docker/tls/nginx-stream.conf` | Terminaison TLS TCP (nginx *stream*) vers `millipede:2101` |
+| `docker-compose.yml` | Service `millipede` avec labels Traefik TCP TLS, réseau `coolify` + `ntrip`, secrets optionnels |
+| `docker/tls/` | Terminaison TLS TCP autonome (nginx stream) — usage hors Coolify/Traefik |
 | `entrypoint.sh` | Démarre caster + proxy ; propage SIGTERM/SIGINT/SIGHUP |
 | `ntrip_auth_proxy.py` | Passerelle d'authentification (rate-limit, whitelist, compare_digest, etc.) |
 | `caster.yaml` | Config Millipede (écoute loopback, `admin_user` désactivé par défaut) |
